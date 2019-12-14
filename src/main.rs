@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use futures::executor;
 use futures::prelude::*;
-// use pin_project::{pin_project, project};
+use futures_util::ready;
+use pin_project::{pin_project, project};
 
 struct Delay {
     duration: Duration,
@@ -48,41 +49,51 @@ impl Future for Delay {
     }
 }
 
-// #[pin_project]
-// enum TwoSteps {
-//     Pending,
-//     Step1(#[pin] Delay),
-//     Step2(#[pin] Delay),
-//     Done,
-// }
-// 
-// impl Future for TwoSteps {
-//     type Output = Result<(), String>;
-// 
-//     #[project]
-//     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-//         loop {
-//             #[project]
-//             match self.project() {
-//                 TwoSteps::Pending => {
-//                     *self = TwoSteps::Step1(Delay::new(Duration::from_secs(2)));
-//                 },
-//                 TwoSteps::Step1(delay) => {
-//                     let fut = delay.poll(cx).and_then(|_| {
-//                         *self = TwoSteps::Step2(Delay::new(Duration::from_secs(5)));
-//                     })
-//                 },
-//             }
-//         }
-//     }
-// }
+#[pin_project]
+enum TwoSteps {
+    Pending,
+    Step1(#[pin] Delay),
+    Step2(#[pin] Delay),
+}
+
+impl Future for TwoSteps {
+    type Output = Result<(), String>;
+
+    #[project]
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        #[project]
+        match self.as_mut().project() {
+            TwoSteps::Pending => {
+                self.set(TwoSteps::Step1(Delay::new(Duration::from_secs(2))));
+                self.poll(cx)
+            }
+            TwoSteps::Step1(delay) => {
+                println!("  - Step1: Waiting 2 seconds");
+                ready!(delay.poll(cx)).unwrap();
+                self.set(TwoSteps::Step2(Delay::new(Duration::from_secs(3))));
+                self.poll(cx)
+            }
+            TwoSteps::Step2(delay) => {
+                println!("  - Step2: Waiting 3 seconds");
+                ready!(delay.poll(cx)).unwrap();
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+}
 
 fn main() {
     executor::block_on(async {
-        for i in 0..5 {
+        for i in 0..3 {
             println!("[{}] Waiting 2 secs.", i);
             Delay::new(Duration::from_secs(2)).await.unwrap();
             println!("[{}] Done waiting.", i);
         }
+    });
+
+    executor::block_on(async {
+        println!("Waiting on two steps.");
+        TwoSteps::Pending.await.unwrap();
+        println!("Done waiting.");
     });
 }
